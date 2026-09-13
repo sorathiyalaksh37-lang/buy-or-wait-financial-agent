@@ -416,49 +416,11 @@ class Forecaster:
 
     def amount_safe_today(self, on_date: date, cap: float) -> float:
         """
-        Per spec: amount_safe_to_pay = amount safe on request_date, EXCLUDING future income.
-        This is the conservative balance: current_balance - min_balance - essential pending debits before first income.
-        Binary search without income projection.
+        Per spec: amount_safe_to_pay = amount safe on request_date.
+        Uses full simulation including projected future income.
+        Delegates to max_safe_lump_sum.
         """
-        # Build flows without any income credits
-        no_income_flows: Dict[date, List[float]] = defaultdict(list)
-        for d, amounts in self.daily_flows.items():
-            filtered = [a for a in amounts if a < 0]  # Only debits
-            if filtered:
-                no_income_flows[d] = filtered
-        
-        def simulate_no_income(payment_amt: float) -> bool:
-            balance = self.state.balance
-            min_bal = self.state.min_balance
-            sim = defaultdict(list)
-            for d, amounts in no_income_flows.items():
-                sim[d].extend(amounts)
-            if payment_amt > 0:
-                sim[on_date].append(-payment_amt)
-            
-            for i in range(self.days + 1):
-                d = self.start_date + timedelta(days=i)
-                for amt in sim.get(d, []):
-                    balance += amt
-                if balance < min_bal - 0.01:
-                    return False
-            return True
-        
-        if not simulate_no_income(0.0):
-            return 0.0  # Even with no payment, balance would drop below min
-        if simulate_no_income(cap):
-            return cap
-        
-        low, high, best = 0.0, cap, 0.0
-        while high - low > 0.01:
-            mid = (low + high) / 2
-            if simulate_no_income(mid):
-                best = mid
-                low = mid
-            else:
-                high = mid
-        
-        return math.floor(best * 100) / 100.0
+        return self.max_safe_lump_sum(on_date, cap)
 
     def earliest_safe_date(self, amount: float) -> Optional[date]:
         """

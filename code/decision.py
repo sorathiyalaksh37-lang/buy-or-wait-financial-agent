@@ -254,40 +254,68 @@ class DecisionEngine:
         if v == int(v):
             return str(int(v))
         return f"{v:.2f}"
-        
     def _generate_explanation(self, out: OutputRow, req: Request, state: UserFinancialState) -> str:
         curr = state.home_currency
         req_curr = req.request_currency or curr
         min_bal = self._fmt(state.min_balance)
 
+        def human_date(d_str: str) -> str:
+            """Format ISO date as '15 June 2024' (no leading zero)."""
+            return date.fromisoformat(d_str).strftime("%-d %B %Y")
+
         method = out.recommended_payment_method
-        if method == "not_recommended":
-            return f"Do not proceed with the {req_curr} {self._fmt(req.requested_amount)} request. Although {req_curr} {self._fmt(out.amount_safe_to_pay)} is available today, the full amount cannot be completed safely within 90 days."
-            
-        elif method == "full_payment":
+        status = out.affordability_status
+        plan_str = out.payment_plan
+
+        if method == "full_payment":
             if out.spending_changes_needed != "none":
-                return f"Make the required spending changes, then pay {req_curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available."
+                # affordable_with_plan + spending changes
+                # Build change clause from expected samples:
+                # "Stop X and reduce Y to Z, then pay..."
+                return f"Make spending changes, then pay {req_curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available."
             else:
                 return f"Pay {req_curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available over the next 90 days."
-                
+
         elif method == "partial_payment":
-            plan = out.payment_plan.split("|")
-            p1_amt = plan[0].split(":")[1]
-            p2_date = plan[1].split(":")[0]
-            p2_amt = plan[1].split(":")[1]
-            d2 = date.fromisoformat(p2_date).strftime("%-d %B %Y")
-            return f"Pay {req_curr} {p1_amt} today and the remaining {req_curr} {p2_amt} on {d2}. This completes the full request and keeps the {curr} {min_bal} minimum protected."
-            
+            parts = plan_str.split("|")
+            p1_amt = float(parts[0].split(":")[1])
+            p2_date = parts[1].split(":")[0]
+            p2_amt = float(parts[1].split(":")[1])
+            d2 = human_date(p2_date)
+            return (f"Pay {req_curr} {self._fmt(p1_amt)} today and the remaining "
+                    f"{req_curr} {self._fmt(p2_amt)} on {d2}. "
+                    f"This completes the full request and keeps the {curr} {min_bal} minimum protected.")
+
         elif method == "installments":
-            plan = out.payment_plan.split("|")
-            n = len(plan)
-            p1_date = plan[0].split(":")[0]
-            p1_amt = plan[0].split(":")[1]
-            d1 = date.fromisoformat(p1_date).strftime("%-d %B %Y")
-            return f"Use {n} installments of {req_curr} {p1_amt}, starting {d1}. This leaves at least {curr} {min_bal} available."
-            
+            parts = plan_str.split("|")
+            n = len(parts)
+            p1_date = parts[0].split(":")[0]
+            p1_amt = float(parts[0].split(":")[1])
+            d1 = human_date(p1_date)
+            return (f"Use {n} installments of {req_curr} {self._fmt(p1_amt)}, "
+                    f"starting {d1}. This leaves at least {curr} {min_bal} available.")
+
         elif method == "wait":
-            d1 = date.fromisoformat(out.earliest_date_for_full_payment).strftime("%-d %B %Y")
-            return f"Wait until {d1}, then pay {req_curr} {self._fmt(req.requested_amount)} in full. Paying sooner would put the {curr} {min_bal} minimum at risk."
-            
+            # "Pay EUR 3,246.10 in full on 15 September 2026. Paying earlier would take the balance below the EUR 1,400 minimum."
+            earliest = out.earliest_date_for_full_payment
+            d1 = human_date(earliest) if earliest else ""
+            return (f"Pay {req_curr} {self._fmt(req.requested_amount)} in full on {d1}. "
+                    f"Paying earlier would take the balance below the {req_curr} {min_bal} minimum.")
+
+        elif method == "not_recommended":
+            # Two patterns:
+            # 1) "Do not make this payment by DATE. None of the available options keeps the CUR MIN minimum protected."
+            # 2) "Do not proceed with the CUR AMT request. Although CUR SAFE is available today, the full amount cannot be completed safely within 90 days."
+            desired_date = req.desired_completion_date.strftime("%-d %B %Y")
+            safe_amt = out.amount_safe_to_pay
+            if safe_amt > 0:
+                # Safe amount exists but not enough
+                return (f"Do not proceed with the {req_curr} {self._fmt(req.requested_amount)} request. "
+                        f"Although {req_curr} {self._fmt(safe_amt)} is available today, "
+                        f"the full amount cannot be completed safely within 90 days.")
+            else:
+                # Nothing safe at all — deadline-based refusal
+                return (f"Do not make this payment by {desired_date}. "
+                        f"None of the available options keeps the {req_curr} {min_bal} minimum protected.")
+
         return "Unknown decision."

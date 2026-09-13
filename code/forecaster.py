@@ -99,13 +99,21 @@ class Forecaster:
 
         # 2. Recurring Expenses (essential/protected only)
         for rec in self.state.recurring_expenses:
-            is_essential = rec.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
+            is_essential = rec.category in (
+                "rent", "utilities", "insurance", "education", "healthcare",
+                "debt_repayment", "family_support", "housing", "groceries", "transport"
+            )
             is_protected = rec.category in protected
             if not (is_essential or is_protected):
                 continue
                 
             # Find the last settlement date for this recurring expense
             last_date = max(e.settlement_date for e in rec.sample_events)
+            
+            # Check if this expense has expired (no payment in > 1.5x cadence)
+            # We use a minimum threshold of 40 days to be safe against slight delays.
+            if (self.start_date - last_date).days > max(rec.cadence_days * 1.5, 40):
+                continue
             
             # Project forward
             curr_date = last_date + timedelta(days=rec.cadence_days)
@@ -325,9 +333,17 @@ class Forecaster:
                 flows[apply_date].append(signed_amt)
 
         for rec in self.state.recurring_expenses:
-            is_essential = rec.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
+            is_essential = rec.category in (
+                "rent", "utilities", "insurance", "education", "healthcare",
+                "debt_repayment", "family_support", "housing", "groceries", "transport"
+            )
             is_protected = rec.category in protected
             if not (is_essential or is_protected):
+                continue
+                
+            # Check if this expense has expired
+            last_date = max(e.settlement_date for e in rec.sample_events)
+            if (self.start_date - last_date).days > max(rec.cadence_days * 1.5, 40):
                 continue
                 
             # If any of the recurring's sample events are stopped/reduced, apply to the projection
@@ -344,7 +360,6 @@ class Forecaster:
             if rec_amt <= 0:
                 continue
 
-            last_date = max(e.settlement_date for e in rec.sample_events)
             curr_date = last_date + timedelta(days=rec.cadence_days)
             while curr_date <= self.end_date:
                 if curr_date >= self.start_date:

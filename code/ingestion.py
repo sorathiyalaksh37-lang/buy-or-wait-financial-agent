@@ -436,11 +436,11 @@ def clean_events(events: List[FinancialEvent]) -> List[FinancialEvent]:
 
 ESSENTIAL_CATEGORIES = frozenset({
     "rent", "utilities", "insurance", "education", "healthcare",
-    "debt_repayment", "family_support", "housing",
+    "debt_repayment", "family_support", "housing", "groceries", "transport"
 })
 
 DISCRETIONARY_CATEGORIES = frozenset({
-    "dining", "entertainment", "shopping", "groceries", "delivery_membership",
+    "dining", "entertainment", "shopping", "delivery_membership",
     "cloud_storage", "streaming", "subscriptions",
 })
 

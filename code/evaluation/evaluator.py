@@ -90,8 +90,8 @@ def evaluate(dataset_path: Path, sample_path: Path):
             if match:
                 metrics[col]["matches"] += 1
             else:
-                # 5.4 Failure-case dump (abbreviated)
-                pass # print(f"  {req.request_id} [{col}] Expected: '{e_val}' | Actual: '{a_val}'")
+                # 5.4 Failure-case dump
+                print(f"  {req.request_id} [{col}] Expected: '{e_val}' | Actual: '{a_val}'")
 
     print("\n--- Evaluation Results ---")
     print(f"{'Field':<35} | {'Matches':<7} | {'Total':<5} | {'Accuracy'}")

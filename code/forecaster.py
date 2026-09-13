@@ -59,24 +59,26 @@ class Forecaster:
         """
         flows: Dict[date, List[float]] = defaultdict(list)
         
+        # Build protected categories set
+        protected = set(self.state.profile.expense_categories_to_protect)
+        
         # 1. Past/Current Events (scheduled, pending, settled that happen >= start_date)
-        # Note: We only project forward. Settled events before start_date are already in balance.
-        # Pending/scheduled before start_date might need to be applied if they haven't settled yet.
-        # For simplicity, we apply all pending/scheduled events.
         for evt in self.state.clean_events:
-            # We only count credits if they are settled or scheduled (income).
-            # Pending credits are ignored per rules.
             if evt.direction == "credit" and evt.status == "pending":
                 continue
                 
-            # If it's already settled before start_date, it's in the balance.
             if evt.status == "settled" and evt.settlement_date < self.start_date:
                 continue
 
-            # We need the amount. If it's None (needs image extraction but failed), we assume 0 or ignore?
-            # Rule 2.6: excluded from balance math.
             if evt.amount is None:
                 continue
+                
+            # Filter non-protected debits
+            if evt.direction == "debit":
+                is_essential = evt.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
+                is_protected = evt.category in protected
+                if not (is_essential or is_protected):
+                    continue
 
             amt = self.state.fx.convert(
                 evt.amount, evt.currency, self.state.home_currency, evt.settlement_date
@@ -95,6 +97,11 @@ class Forecaster:
 
         # 2. Recurring Expenses
         for rec in self.state.recurring_expenses:
+            is_essential = rec.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
+            is_protected = rec.category in protected
+            if not (is_essential or is_protected):
+                continue
+                
             # Find the last settlement date for this recurring expense
             last_date = max(e.settlement_date for e in rec.sample_events)
             
@@ -175,6 +182,7 @@ class Forecaster:
         
         # Create lookup for changes
         change_map = {c.event_id: c for c in changes}
+        protected = set(self.state.profile.expense_categories_to_protect)
         
         for evt in self.state.clean_events:
             if evt.direction == "credit" and evt.status == "pending":
@@ -183,6 +191,13 @@ class Forecaster:
                 continue
             if evt.amount is None:
                 continue
+
+            # Filter non-protected debits
+            if evt.direction == "debit":
+                is_essential = evt.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
+                is_protected = evt.category in protected
+                if not (is_essential or is_protected):
+                    continue
 
             amt = evt.amount
             if evt.event_id in change_map:
@@ -203,6 +218,11 @@ class Forecaster:
                 flows[apply_date].append(signed_amt)
 
         for rec in self.state.recurring_expenses:
+            is_essential = rec.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
+            is_protected = rec.category in protected
+            if not (is_essential or is_protected):
+                continue
+                
             # If any of the recurring's sample events are stopped/reduced, apply to the projection
             rec_amt = rec.avg_amount
             for eid in rec.event_ids:

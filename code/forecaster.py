@@ -97,7 +97,7 @@ class Forecaster:
             if apply_date <= self.end_date:
                 flows[apply_date].append(signed_amt)
 
-        # 2. Recurring Expenses
+        # 2. Recurring Expenses (essential/protected only)
         for rec in self.state.recurring_expenses:
             is_essential = rec.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
             is_protected = rec.category in protected
@@ -115,8 +115,45 @@ class Forecaster:
                         rec.avg_amount, rec.currency, self.state.home_currency, curr_date
                     )
                     if amt is not None:
-                        flows[curr_date].append(-amt) # Recurring expenses are debits
+                        flows[curr_date].append(-amt)
                 curr_date += timedelta(days=rec.cadence_days)
+
+        # 3. Recurring Income (salary, etc.)
+        # Detect recurring income from settled salary events and project forward.
+        income_events = [
+            e for e in self.state.clean_events
+            if e.direction == "credit" and e.status == "settled"
+            and e.category in ("salary", "income", "freelance", "bonus")
+            and e.amount is not None
+        ]
+        if income_events:
+            # Group by similar amounts (~same salary)
+            income_events.sort(key=lambda e: e.settlement_date)
+            # Compute cadence
+            if len(income_events) >= 2:
+                gaps = [
+                    (income_events[i+1].settlement_date - income_events[i].settlement_date).days
+                    for i in range(len(income_events)-1)
+                ]
+                avg_gap = int(sum(gaps) / len(gaps))
+                avg_income = sum(e.amount for e in income_events) / len(income_events)
+                income_currency = income_events[-1].currency
+                
+                # Only project if cadence looks monthly-ish (20-45 days)
+                if 15 <= avg_gap <= 60:
+                    last_income_date = income_events[-1].settlement_date
+                    next_income_date = last_income_date + timedelta(days=avg_gap)
+                    while next_income_date <= self.end_date:
+                        if next_income_date >= self.start_date:
+                            amt = self.state.fx.convert(
+                                avg_income, income_currency, self.state.home_currency, next_income_date
+                            )
+                            if amt is not None:
+                                flows[next_income_date].append(+amt)
+                        next_income_date += timedelta(days=avg_gap)
+            else:
+                # Single income event - if it's scheduled/recurring, still project
+                pass
 
         return flows
 
@@ -252,26 +289,53 @@ class Forecaster:
                         flows[curr_date].append(-conv_amt)
                 curr_date += timedelta(days=rec.cadence_days)
 
+        # Also project recurring income (same logic as main flow builder)
+        income_events = [
+            e for e in self.state.clean_events
+            if e.direction == "credit" and e.status == "settled"
+            and e.category in ("salary", "income", "freelance", "bonus")
+            and e.amount is not None
+        ]
+        if income_events:
+            income_events.sort(key=lambda e: e.settlement_date)
+            if len(income_events) >= 2:
+                gaps = [
+                    (income_events[i+1].settlement_date - income_events[i].settlement_date).days
+                    for i in range(len(income_events)-1)
+                ]
+                avg_gap = int(sum(gaps) / len(gaps))
+                avg_income = sum(e.amount for e in income_events) / len(income_events)
+                income_currency = income_events[-1].currency
+                if 15 <= avg_gap <= 60:
+                    last_income_date = income_events[-1].settlement_date
+                    next_income_date = last_income_date + timedelta(days=avg_gap)
+                    while next_income_date <= self.end_date:
+                        if next_income_date >= self.start_date:
+                            amt = self.state.fx.convert(
+                                avg_income, income_currency, self.state.home_currency, next_income_date
+                            )
+                            if amt is not None:
+                                flows[next_income_date].append(+amt)
+                        next_income_date += timedelta(days=avg_gap)
+
         return flows
 
     def max_safe_lump_sum(self, on_date: date, cap: float) -> float:
         """
         Binary search the largest lump-sum on `on_date` that is safe.
         Returns amount between 0 and `cap`.
+        This uses full simulation INCLUDING projected future income.
         """
         low = 0.0
         high = cap
         best = 0.0
         
-        # Check if 0 is safe
         if not self.simulate([(on_date, 0.0)]).is_safe:
             return 0.0
             
-        # Check if cap is safe
         if self.simulate([(on_date, cap)]).is_safe:
             return cap
             
-        # Binary search (precision to 2 decimal places)
         while high - low > 0.01:
             mid = (low + high) / 2
             if self.simulate([(on_date, mid)]).is_safe:
@@ -280,12 +344,56 @@ class Forecaster:
             else:
                 high = mid
                 
-        # To be completely safe with floating point, do a final check
         if best > 0.0:
-            # Round down to 2 decimal places to be conservative
             best = math.floor(best * 100) / 100.0
             
         return best
+
+    def amount_safe_today(self, on_date: date, cap: float) -> float:
+        """
+        Per spec: amount_safe_to_pay = amount safe on request_date, EXCLUDING future income.
+        This is the conservative balance: current_balance - min_balance - essential pending debits before first income.
+        Binary search without income projection.
+        """
+        # Build flows without any income credits
+        no_income_flows: Dict[date, List[float]] = defaultdict(list)
+        for d, amounts in self.daily_flows.items():
+            filtered = [a for a in amounts if a < 0]  # Only debits
+            if filtered:
+                no_income_flows[d] = filtered
+        
+        def simulate_no_income(payment_amt: float) -> bool:
+            balance = self.state.balance
+            min_bal = self.state.min_balance
+            sim = defaultdict(list)
+            for d, amounts in no_income_flows.items():
+                sim[d].extend(amounts)
+            if payment_amt > 0:
+                sim[on_date].append(-payment_amt)
+            
+            for i in range(self.days + 1):
+                d = self.start_date + timedelta(days=i)
+                for amt in sim.get(d, []):
+                    balance += amt
+                if balance < min_bal - 0.01:
+                    return False
+            return True
+        
+        if not simulate_no_income(0.0):
+            return 0.0  # Even with no payment, balance would drop below min
+        if simulate_no_income(cap):
+            return cap
+        
+        low, high, best = 0.0, cap, 0.0
+        while high - low > 0.01:
+            mid = (low + high) / 2
+            if simulate_no_income(mid):
+                best = mid
+                low = mid
+            else:
+                high = mid
+        
+        return math.floor(best * 100) / 100.0
 
     def earliest_safe_date(self, amount: float) -> Optional[date]:
         """

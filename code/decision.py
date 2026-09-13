@@ -45,6 +45,9 @@ class DecisionEngine:
             req_amt_home = req.requested_amount
             
         # 1. Base amounts
+        # amount_safe_to_pay is "safe on request_date WITHOUT counting future income" (per spec)
+        safe_today_home_conservative = fc.amount_safe_today(req.request_date, req_amt_home)
+        # For plan eligibility (can we afford a plan considering future income?), use full simulation
         safe_today_home = fc.max_safe_lump_sum(req.request_date, req_amt_home)
         earliest_full = fc.earliest_safe_date(req_amt_home)
         
@@ -90,11 +93,10 @@ class DecisionEngine:
                     ))
                     
         # C) Partial
-        # Convert safe_today_home back to request_currency
-        safe_today = user_state.fx.convert(safe_today_home, user_state.home_currency, req_currency, req.request_date)
+        # Convert CONSERVATIVE safe_today back to request_currency for amount_safe_to_pay
+        safe_today = user_state.fx.convert(safe_today_home_conservative, user_state.home_currency, req_currency, req.request_date)
         if safe_today is None:
-            safe_today = safe_today_home
-        # Cap at requested_amount
+            safe_today = safe_today_home_conservative
         safe_today = min(safe_today, req.requested_amount)
             
         if "partial_payment" in allowed_methods and req.allows_partial_payment:
@@ -158,21 +160,21 @@ class DecisionEngine:
                             is_safe=True
                         ))
 
-        # E) Wait
-        if "full_payment" in allowed_methods: # wait requires full_payment acceptability
+        # E) Wait — only if earliest_full is within desired_completion_date
+        if "full_payment" in allowed_methods:
             if earliest_full and earliest_full > req.request_date:
-                # Usually wait means wait past deadline if needed, but it's ranked lower if it misses deadline
-                candidates.append(EvaluatedPlan(
-                    method="wait",
-                    plan=[(earliest_full, req.requested_amount)],
-                    spending_changes=[],
-                    total_cost=req.requested_amount,
-                    completes_by_deadline=(earliest_full <= req.desired_completion_date),
-                    first_payment_date=earliest_full,
-                    num_payments=1,
-                    payment_option_id="",
-                    is_safe=True
-                ))
+                if earliest_full <= req.desired_completion_date:
+                    candidates.append(EvaluatedPlan(
+                        method="wait",
+                        plan=[(earliest_full, req.requested_amount)],
+                        spending_changes=[],
+                        total_cost=req.requested_amount,
+                        completes_by_deadline=True,
+                        first_payment_date=earliest_full,
+                        num_payments=1,
+                        payment_option_id="",
+                        is_safe=True
+                    ))
 
         # F) Rank Candidates
         # Deterministic ranking:

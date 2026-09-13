@@ -62,18 +62,22 @@ class Forecaster:
         # Build protected categories set
         protected = set(self.state.profile.expense_categories_to_protect)
         
-        # 1. Past/Current Events (scheduled, pending, settled that happen >= start_date)
+        # 1. Future pending/scheduled events only.
+        # IMPORTANT: settled events are already reflected in current_available_balance.
+        # Only pending and scheduled events represent future cash-flows NOT yet in the balance.
         for evt in self.state.clean_events:
-            if evt.direction == "credit" and evt.status == "pending":
+            # Skip settled events entirely - already in balance
+            if evt.status == "settled":
                 continue
-                
-            if evt.status == "settled" and evt.settlement_date < self.start_date:
+
+            # Skip pending credits (rule: don't count pending credits)
+            if evt.direction == "credit" and evt.status == "pending":
                 continue
 
             if evt.amount is None:
                 continue
                 
-            # Filter non-protected debits
+            # Filter non-protected/non-essential debits
             if evt.direction == "debit":
                 is_essential = evt.category in ("rent", "utilities", "insurance", "education", "healthcare", "debt_repayment", "family_support", "housing")
                 is_protected = evt.category in protected
@@ -84,13 +88,11 @@ class Forecaster:
                 evt.amount, evt.currency, self.state.home_currency, evt.settlement_date
             )
             if amt is None:
-                continue # Cannot convert, ignore for safety
+                continue
                 
             signed_amt = amt if evt.direction == "credit" else -amt
             
-            # If the event was supposed to settle before start_date but is still pending/scheduled,
-            # we apply it on start_date (today) as it's a looming obligation.
-            # Otherwise apply on its settlement date.
+            # Apply on settlement_date (or start_date if overdue)
             apply_date = max(self.start_date, evt.settlement_date)
             if apply_date <= self.end_date:
                 flows[apply_date].append(signed_amt)
@@ -185,9 +187,11 @@ class Forecaster:
         protected = set(self.state.profile.expense_categories_to_protect)
         
         for evt in self.state.clean_events:
-            if evt.direction == "credit" and evt.status == "pending":
+            # Skip settled events — already in balance
+            if evt.status == "settled":
                 continue
-            if evt.status == "settled" and evt.settlement_date < self.start_date:
+            # Skip pending credits
+            if evt.direction == "credit" and evt.status == "pending":
                 continue
             if evt.amount is None:
                 continue
@@ -203,7 +207,7 @@ class Forecaster:
             if evt.event_id in change_map:
                 chg = change_map[evt.event_id]
                 if chg.action == "stop":
-                    continue # Skip entirely
+                    continue
                 elif chg.action == "reduce_to":
                     amt = chg.new_amount
                     

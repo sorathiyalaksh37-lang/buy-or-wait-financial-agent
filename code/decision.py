@@ -210,6 +210,7 @@ class DecisionEngine:
             out.affordability_status = "not_affordable"
             out.payment_plan = "none"
             out.spending_changes_needed = "none"
+            out.earliest_date_for_full_payment = ""  # Clear when not_affordable
         else:
             best = valid[0]
             out.recommended_payment_method = best.method

@@ -67,6 +67,7 @@ def main():
     
     if is_valid:
         print("Success! output.csv is ready.")
+        Path("evaluation").mkdir(exist_ok=True)
         extractor.generate_usage_report(Path("evaluation/usage_report.md"))
         sys.exit(0)
     else:

@@ -126,34 +126,99 @@ class Forecaster:
             and e.category in ("salary", "income", "freelance", "bonus")
             and e.amount is not None
         ]
+        # Also include scheduled salary events
+        scheduled_income = [
+            e for e in self.state.clean_events
+            if e.direction == "credit" and e.status == "scheduled"
+            and e.category in ("salary", "income", "freelance", "bonus")
+            and e.amount is not None
+        ]
         if income_events:
-            # Group by similar amounts (~same salary)
             income_events.sort(key=lambda e: e.settlement_date)
-            # Compute cadence
+            
             if len(income_events) >= 2:
                 gaps = [
                     (income_events[i+1].settlement_date - income_events[i].settlement_date).days
                     for i in range(len(income_events)-1)
                 ]
                 avg_gap = int(sum(gaps) / len(gaps))
-                avg_income = sum(e.amount for e in income_events) / len(income_events)
                 income_currency = income_events[-1].currency
                 
-                # Only project if cadence looks monthly-ish (20-45 days)
-                if 15 <= avg_gap <= 60:
-                    last_income_date = income_events[-1].settlement_date
-                    next_income_date = last_income_date + timedelta(days=avg_gap)
-                    while next_income_date <= self.end_date:
+                # Detect if salary is monthly (same day-of-month)
+                days_of_month = [e.settlement_date.day for e in income_events]
+                most_common_day = max(set(days_of_month), key=days_of_month.count)
+                day_consistency = days_of_month.count(most_common_day) / len(days_of_month)
+                
+                if day_consistency >= 0.6 and 25 <= avg_gap <= 60:
+                    # Monthly salary on same day each month
+                    # Sum up all payments in the last "month" as total monthly income
+                    last_month_payments = [e for e in income_events if e.settlement_date.day == most_common_day]
+                    avg_income = sum(e.amount for e in last_month_payments) / len(last_month_payments) if last_month_payments else income_events[-1].amount
+                    
+                    # Find last occurrence at this day
+                    last_on_day = max(e.settlement_date for e in income_events if e.settlement_date.day == most_common_day)
+                    
+                    # Project monthly: same day next months
+                    import calendar
+                    proj_month = last_on_day.month
+                    proj_year = last_on_day.year
+                    while True:
+                        proj_month += 1
+                        if proj_month > 12:
+                            proj_month = 1
+                            proj_year += 1
+                        try:
+                            next_income_date = date(proj_year, proj_month, most_common_day)
+                        except ValueError:
+                            # Day doesn't exist in month (e.g. Feb 30)
+                            last_day = calendar.monthrange(proj_year, proj_month)[1]
+                            next_income_date = date(proj_year, proj_month, last_day)
+                        
+                        if next_income_date > self.end_date:
+                            break
                         if next_income_date >= self.start_date:
-                            amt = self.state.fx.convert(
-                                avg_income, income_currency, self.state.home_currency, next_income_date
-                            )
-                            if amt is not None:
-                                flows[next_income_date].append(+amt)
-                        next_income_date += timedelta(days=avg_gap)
-            else:
-                # Single income event - if it's scheduled/recurring, still project
-                pass
+                            # Skip if already scheduled
+                            if not any(e.settlement_date == next_income_date for e in scheduled_income):
+                                amt = self.state.fx.convert(
+                                    avg_income, income_currency, self.state.home_currency, next_income_date
+                                )
+                                if amt is not None:
+                                    flows[next_income_date].append(+amt)
+
+                elif 5 <= avg_gap <= 24:
+                    # Bi-weekly or split pay: aggregate into monthly buckets
+                    # Sum all income events in last full month window
+                    last_date = income_events[-1].settlement_date
+                    window_start = last_date.replace(day=1)
+                    monthly_total = sum(
+                        e.amount for e in income_events
+                        if e.settlement_date >= window_start
+                    )
+                    monthly_currency = income_events[-1].currency
+                    
+                    if monthly_total > 0:
+                        import calendar
+                        proj_month = last_date.month
+                        proj_year = last_date.year
+                        # Pay on 15th of each month as approximation
+                        while True:
+                            proj_month += 1
+                            if proj_month > 12:
+                                proj_month = 1
+                                proj_year += 1
+                            try:
+                                next_income_date = date(proj_year, proj_month, 15)
+                            except ValueError:
+                                next_income_date = date(proj_year, proj_month, calendar.monthrange(proj_year, proj_month)[1])
+                            if next_income_date > self.end_date:
+                                break
+                            if next_income_date >= self.start_date:
+                                if not any(e.settlement_date == next_income_date for e in scheduled_income):
+                                    amt = self.state.fx.convert(
+                                        monthly_total, monthly_currency, self.state.home_currency, next_income_date
+                                    )
+                                    if amt is not None:
+                                        flows[next_income_date].append(+amt)
 
         return flows
 

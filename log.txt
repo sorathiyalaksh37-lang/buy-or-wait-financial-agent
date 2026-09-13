@@ -46,3 +46,25 @@ branch=main
 repo_root=/Users/lakshsorathiya/Downloads/hackerrank-orchestrate-september26-main
 worktree=main
 parent_agent=none
+
+## 2026-09-13T15:53:00+05:30 Phase 1-8 Core Fixes
+
+User Prompt (verbatim, secrets redacted):
+continue
+
+Agent Response Summary:
+Identified and fixed the root cause of 0 amount_safe_to_pay: settled events were being double-counted in the forecaster (already baked into current_available_balance). Also added recurring income projection so salary events are forecasted forward. Added conservative amount_safe_today() method that excludes future income per spec. Fixed wait candidate to only be offered when earliest_full <= desired_completion_date. Fixed evaluation dir creation. Result: affordability_status 72%, recommended_payment_method 76%, payment_plan 60%.
+
+Actions:
+* Modified code/forecaster.py: fix settled event exclusion, add recurring income projection, add amount_safe_today()
+* Modified code/decision.py: use conservative safe amount, fix wait gate, clear earliest_date on not_affordable
+* Modified code/main.py: create evaluation dir before usage report
+* Ran evaluator and confirmed accuracy improvement
+* git commit and push ebb7752
+
+Context:
+tool=Antigravity
+branch=main
+repo_root=/Users/lakshsorathiya/Downloads/hackerrank-orchestrate-september26-main
+worktree=main
+parent_agent=none

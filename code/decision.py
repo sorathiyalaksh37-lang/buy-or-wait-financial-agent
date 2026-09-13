@@ -215,8 +215,8 @@ class DecisionEngine:
             best = valid[0]
             out.recommended_payment_method = best.method
             
-            # Format plan
-            out.payment_plan = "|".join(f"{d.isoformat()}:{self._fmt(amt)}" for d, amt in best.plan)
+            # Format plan (no commas in amounts for payment_plan field)
+            out.payment_plan = "|".join(f"{d.isoformat()}:{self._fmt_plan(amt)}" for d, amt in best.plan)
             
             # Format spending changes
             if not best.spending_changes:
@@ -227,7 +227,7 @@ class DecisionEngine:
                     if chg.action == "stop":
                         chgs.append(f"stop:{chg.event_id}")
                     else:
-                        chgs.append(f"reduce_to:{chg.event_id}:{self._fmt(chg.new_amount)}")
+                        chgs.append(f"reduce_to:{chg.event_id}:{self._fmt_plan(chg.new_amount)}")
                 out.spending_changes_needed = "|".join(chgs)
                 
             # Determine status
@@ -244,7 +244,15 @@ class DecisionEngine:
         return out
         
     def _fmt(self, v: float) -> str:
-        if v == int(v): return str(int(v))
+        """Format number: integers with commas, decimals with 2dp and commas."""
+        if v == int(v):
+            return f"{int(v):,}"
+        return f"{v:,.2f}"
+
+    def _fmt_plan(self, v: float) -> str:
+        """Format number for payment_plan field: no commas (YYYY-MM-DD:amount)."""
+        if v == int(v):
+            return str(int(v))
         return f"{v:.2f}"
         
     def _generate_explanation(self, out: OutputRow, req: Request, state: UserFinancialState) -> str:

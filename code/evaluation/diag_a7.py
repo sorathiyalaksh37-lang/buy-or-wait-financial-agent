@@ -5,6 +5,5 @@ from ingestion import load_dataset
 from extraction import Extractor
 extractor = Extractor()
 ds = load_dataset(Path("dataset"), extractor)
-state = ds.get_user_state("user_04")
-for r in state.recurring_expenses:
-    print(f"Recurring {r.category}: {r.avg_amount} {r.currency} / {r.cadence_days}d")
+state = ds.get_user_state("user_24")
+print(f"Bal: {state.balance}, Min: {state.min_balance}, Diff: {state.balance - state.min_balance}")

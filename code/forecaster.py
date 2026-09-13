@@ -152,11 +152,12 @@ class Forecaster:
                 if day_consistency >= 0.6 and 25 <= avg_gap <= 60:
                     # Monthly salary on same day each month
                     # Sum up all payments in the last "month" as total monthly income
-                    last_month_payments = [e for e in income_events if e.settlement_date.day == most_common_day]
+                    most_recent_day = income_events[-1].settlement_date.day
+                    last_month_payments = [e for e in income_events if e.settlement_date.day == most_recent_day]
                     avg_income = sum(e.amount for e in last_month_payments) / len(last_month_payments) if last_month_payments else income_events[-1].amount
                     
                     # Find last occurrence at this day
-                    last_on_day = max(e.settlement_date for e in income_events if e.settlement_date.day == most_common_day)
+                    last_on_day = income_events[-1].settlement_date
                     
                     # Project monthly: same day next months
                     import calendar
@@ -168,7 +169,7 @@ class Forecaster:
                             proj_month = 1
                             proj_year += 1
                         try:
-                            next_income_date = date(proj_year, proj_month, most_common_day)
+                            next_income_date = date(proj_year, proj_month, most_recent_day)
                         except ValueError:
                             # Day doesn't exist in month (e.g. Feb 30)
                             last_day = calendar.monthrange(proj_year, proj_month)[1]
@@ -421,6 +422,7 @@ class Forecaster:
         Delegates to max_safe_lump_sum.
         """
         return self.max_safe_lump_sum(on_date, cap)
+
 
     def earliest_safe_date(self, amount: float) -> Optional[date]:
         """

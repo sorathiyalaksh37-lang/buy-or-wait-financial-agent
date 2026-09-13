@@ -12,8 +12,13 @@ from ingestion import load_dataset
 from decision import DecisionEngine
 from schema import OUTPUT_COLUMNS
 from validator import validate_output_csv
+from extraction import Extractor
 
 def main():
+    # Seed RNG if any random choice is used later for determinism
+    import random
+    random.seed(42)
+
     dataset_root = Path("dataset")
     if not dataset_root.exists():
         print(f"Error: {dataset_root} not found.")
@@ -21,8 +26,11 @@ def main():
         
     output_file = Path("output.csv")
     
+    # Initialize Extractor
+    extractor = Extractor()
+    
     # 1. Load Dataset
-    dataset = load_dataset(dataset_root)
+    dataset = load_dataset(dataset_root, extractor)
     
     # 2. Initialize Decision Engine
     engine = DecisionEngine(dataset)
@@ -59,6 +67,7 @@ def main():
     
     if is_valid:
         print("Success! output.csv is ready.")
+        extractor.generate_usage_report(Path("evaluation/usage_report.md"))
         sys.exit(0)
     else:
         print("Validation failed. See errors above.")

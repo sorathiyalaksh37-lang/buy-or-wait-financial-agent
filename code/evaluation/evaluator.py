@@ -15,6 +15,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from schema import OutputRow, OUTPUT_COLUMNS
 from ingestion import load_dataset
 from decision import DecisionEngine
+from extraction import Extractor
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -29,7 +30,8 @@ def load_expected(path: Path) -> Dict[str, dict]:
 
 def evaluate(dataset_path: Path, sample_path: Path):
     print("Loading dataset...")
-    ds = load_dataset(dataset_path)
+    extractor = Extractor()
+    ds = load_dataset(dataset_path, extractor)
     expected = load_expected(sample_path)
     
     engine = DecisionEngine(ds)

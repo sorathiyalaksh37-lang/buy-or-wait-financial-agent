@@ -15,6 +15,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from extraction import Extractor
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Typed dataclasses
@@ -383,27 +385,31 @@ def clean_events(events: List[FinancialEvent]) -> List[FinancialEvent]:
     """
     by_id: Dict[str, FinancialEvent] = {e.event_id: e for e in events}
     excluded: Set[str] = set()
+    
+    # 1. Handle work-expense reimbursement, duplicate charge+refund
+    # E.g. event_1543 debit 100, event_1544 credit 100 linked to 1543.
+    # We should exclude both to net-zero them.
+    for evt in events:
+        if evt.linked_event_id:
+            linked = by_id.get(evt.linked_event_id)
+            if linked and evt.amount == linked.amount and evt.direction != linked.direction:
+                excluded.add(evt.event_id)
+                excluded.add(linked.event_id)
 
-    # Mark failed events excluded unless linked retry exists
+    # 2. Mark failed events excluded unless linked retry exists
     for evt in events:
         if evt.status == "failed":
-            # Find if there's a linked retry
             has_retry = any(
                 e.linked_event_id == evt.event_id and e.status in ("scheduled", "settled", "pending")
                 for e in events
             )
             if has_retry:
-                # The failed event is superseded by its retry; exclude the failed one
                 excluded.add(evt.event_id)
             else:
                 excluded.add(evt.event_id)
 
-    # Cancelled auth + settled purchase: exclude the cancelled one
+    # 3. Cancelled auth + settled purchase
     for evt in events:
-        if evt.status == "cancelled" and evt.linked_event_id:
-            linked = by_id.get(evt.linked_event_id)
-            if linked and linked.status == "settled":
-                excluded.add(evt.event_id)
         if evt.status == "cancelled":
             excluded.add(evt.event_id)
 
@@ -531,6 +537,7 @@ class UserFinancialState:
     messages: List[Message]
     images: List[ImageRecord]
     fx: ExchangeRateIndex
+    extractor: Extractor
 
     @property
     def user_id(self) -> str:
@@ -590,12 +597,36 @@ def build_user_state(
     messages: Dict[str, List[Message]],
     images: Dict[str, List[ImageRecord]],
     fx: ExchangeRateIndex,
+    extractor: Extractor,
+    dataset_root: Path
 ) -> Optional[UserFinancialState]:
     profile = profiles.get(user_id)
     if profile is None:
         return None
 
     raw_events = all_events.get(user_id, [])
+    user_messages = messages.get(user_id, [])
+    user_images = images.get(user_id, [])
+    
+    # Fill in blank amounts via Extractor
+    # Also handle messages to override events if needed (simplistic mock approach)
+    for evt in raw_events:
+        if evt.amount is None:
+            # Check if there is an image for this event
+            img = next((img for img in user_images if img.related_event_id == evt.event_id), None)
+            if img:
+                img_path = dataset_root / "media" / "images" / f"{img.image_id}.png"
+                ext_res = extractor.extract_from_image(img_path)
+                if ext_res and "amount" in ext_res:
+                    evt.amount = float(ext_res["amount"])
+            else:
+                # Could check message
+                msg = next((m for m in user_messages if m.related_event_id == evt.event_id), None)
+                if msg:
+                    ext_res = extractor.extract_from_message(msg.message_text)
+                    if ext_res and "amount" in ext_res:
+                        evt.amount = float(ext_res["amount"])
+
     cleaned = clean_events(raw_events)
     recurring = detect_recurring_expenses(cleaned, profile.home_currency, fx)
 
@@ -603,9 +634,10 @@ def build_user_state(
         profile=profile,
         clean_events=cleaned,
         recurring_expenses=recurring,
-        messages=messages.get(user_id, []),
-        images=images.get(user_id, []),
+        messages=user_messages,
+        images=user_images,
         fx=fx,
+        extractor=extractor,
     )
 
 
@@ -623,6 +655,7 @@ class Dataset:
     messages: Dict[str, List[Message]]
     images: Dict[str, List[ImageRecord]]
     dataset_root: Path
+    extractor: Extractor
     _user_states: Dict[str, UserFinancialState] = field(default_factory=dict)
 
     def get_user_state(self, user_id: str) -> Optional[UserFinancialState]:
@@ -630,6 +663,7 @@ class Dataset:
             state = build_user_state(
                 user_id, self.profiles, self.all_events,
                 self.messages, self.images, self.fx,
+                self.extractor, self.dataset_root
             )
             if state:
                 self._user_states[user_id] = state
@@ -639,7 +673,7 @@ class Dataset:
         return self.dataset_root / "media" / "images" / f"{image_id}.png"
 
 
-def load_dataset(dataset_root: Path) -> Dataset:
+def load_dataset(dataset_root: Path, extractor: Extractor) -> Dataset:
     print(f"[ingestion] Loading dataset from {dataset_root} …")
     profiles = load_profiles(dataset_root / "financial_profiles.csv")
     print(f"  profiles: {len(profiles)}")
@@ -665,4 +699,5 @@ def load_dataset(dataset_root: Path) -> Dataset:
         messages=messages,
         images=images,
         dataset_root=dataset_root,
+        extractor=extractor,
     )

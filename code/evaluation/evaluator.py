@@ -41,6 +41,10 @@ def evaluate(dataset_path: Path, sample_path: Path):
     sample_requests = []
     from ingestion import Request, _parse_date, _parse_bool
     for req_id, row in expected.items():
+        text = row.get("request_text", "").strip()
+        import re
+        m = re.search(r"([A-Z]{3})\s+[\d,\.]+", text)
+        currency = m.group(1) if m else ""
         req = Request(
             request_id=row["request_id"].strip(),
             user_id=row["user_id"].strip(),
@@ -49,7 +53,8 @@ def evaluate(dataset_path: Path, sample_path: Path):
             requested_amount=float(row["requested_amount"]),
             desired_completion_date=_parse_date(row["desired_completion_date"]),
             allows_partial_payment=_parse_bool(row.get("allows_partial_payment", "false")),
-            request_text=row.get("request_text", "").strip(),
+            request_text=text,
+            request_currency=currency,
         )
         sample_requests.append(req)
         

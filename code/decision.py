@@ -37,9 +37,16 @@ class DecisionEngine:
             
         fc = Forecaster(user_state, req.request_date)
         
+        req_currency = req.request_currency or user_state.home_currency
+        
+        # Convert requested amount to home currency for simulation
+        req_amt_home = user_state.fx.convert(req.requested_amount, req_currency, user_state.home_currency, req.request_date)
+        if req_amt_home is None:
+            req_amt_home = req.requested_amount
+            
         # 1. Base amounts
-        safe_today = fc.max_safe_lump_sum(req.request_date, req.requested_amount)
-        earliest_full = fc.earliest_safe_date(req.requested_amount)
+        safe_today_home = fc.max_safe_lump_sum(req.request_date, req_amt_home)
+        earliest_full = fc.earliest_safe_date(req_amt_home)
         
         candidates: List[EvaluatedPlan] = []
         
@@ -47,7 +54,7 @@ class DecisionEngine:
         
         # A) Full today
         if "full_payment" in allowed_methods:
-            if safe_today >= req.requested_amount:
+            if safe_today_home >= req_amt_home:
                 candidates.append(EvaluatedPlan(
                     method="full_payment",
                     plan=[(req.request_date, req.requested_amount)],
@@ -62,7 +69,7 @@ class DecisionEngine:
             else:
                 # B) Full today + spending changes
                 changes = fc.find_safe_spending_changes(
-                    [(req.request_date, req.requested_amount)],
+                    [(req.request_date, req_amt_home)],
                     user_state.profile.expense_categories_user_is_willing_to_reduce,
                     user_state.profile.expense_categories_user_is_willing_to_stop
                 )
@@ -83,15 +90,26 @@ class DecisionEngine:
                     ))
                     
         # C) Partial
+        # Convert safe_today_home back to request_currency
+        safe_today = user_state.fx.convert(safe_today_home, user_state.home_currency, req_currency, req.request_date)
+        if safe_today is None:
+            safe_today = safe_today_home
+        # Cap at requested_amount
+        safe_today = min(safe_today, req.requested_amount)
+            
         if "partial_payment" in allowed_methods and req.allows_partial_payment:
-            if 0 < safe_today < req.requested_amount and earliest_full:
+            if 0 < safe_today_home < req_amt_home and earliest_full:
                 if earliest_full <= req.desired_completion_date:
                     partial_plan = [
                         (req.request_date, safe_today),
                         (earliest_full, req.requested_amount - safe_today)
                     ]
-                    # Double check it's fully safe
-                    if fc.simulate(partial_plan).is_safe:
+                    # Double check it's fully safe (simulate in home currency)
+                    partial_plan_home = [
+                        (req.request_date, safe_today_home),
+                        (earliest_full, req_amt_home - safe_today_home)
+                    ]
+                    if fc.simulate(partial_plan_home).is_safe:
                         candidates.append(EvaluatedPlan(
                             method="partial_payment",
                             plan=partial_plan,
@@ -115,15 +133,19 @@ class DecisionEngine:
                         
                     # Build plan
                     inst_plan = []
+                    inst_plan_home = []
                     d = opt.first_payment_date
                     freq = opt.payment_frequency_days or 30
                     for _ in range(opt.number_of_payments):
                         inst_plan.append((d, opt.payment_amount))
+                        # For simulation, installments need to be converted to home currency too
+                        opt_amt_home = user_state.fx.convert(opt.payment_amount, req_currency, user_state.home_currency, d)
+                        inst_plan_home.append((d, opt_amt_home or opt.payment_amount))
                         d += timedelta(days=freq)
                         
                     last_date = inst_plan[-1][0]
                     
-                    if fc.simulate(inst_plan).is_safe:
+                    if last_date <= req.desired_completion_date and fc.simulate(inst_plan_home).is_safe:
                         candidates.append(EvaluatedPlan(
                             method="installments",
                             plan=inst_plan,
@@ -224,46 +246,37 @@ class DecisionEngine:
         
     def _generate_explanation(self, out: OutputRow, req: Request, state: UserFinancialState) -> str:
         curr = state.home_currency
+        req_curr = req.request_currency or curr
         min_bal = self._fmt(state.min_balance)
-        req_curr = "" # Default to home_currency if not mapped, but let's assume request is in home_currency for the explanation wording, or use req.amount... Wait, req amounts are not explicitly currency-tagged, they assume home currency unless stated otherwise? Actually, requests might be in other currencies. Let's look at the sample text.
-        # Sample: "Pay ZAR 25,256 today. This leaves at least ZAR 18,000 available over the next 90 days."
-        # If the request string contains "ZAR 25,256", we can just use state.home_currency for min balance.
-        # What about the payment plan currency? The sample says "Pay ZAR 25,256". 
-        # For this hackathon, we assume the requested_amount is in the profile's home_currency unless cross-currency rules apply. (Phase 7). We'll assume home_currency for now.
 
         method = out.recommended_payment_method
         if method == "not_recommended":
-            return f"Do not proceed with the {curr} {self._fmt(req.requested_amount)} request. Although {curr} {self._fmt(out.amount_safe_to_pay)} is available today, the full amount cannot be completed safely within 90 days."
+            return f"Do not proceed with the {req_curr} {self._fmt(req.requested_amount)} request. Although {req_curr} {self._fmt(out.amount_safe_to_pay)} is available today, the full amount cannot be completed safely within 90 days."
             
         elif method == "full_payment":
             if out.spending_changes_needed != "none":
-                # E.g., "Stop the family streaming plan, then pay EUR 620.40 today. This leaves at least EUR 800 available."
-                return f"Make the required spending changes, then pay {curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available."
+                return f"Make the required spending changes, then pay {req_curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available."
             else:
-                return f"Pay {curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available over the next 90 days."
+                return f"Pay {req_curr} {self._fmt(req.requested_amount)} today. This leaves at least {curr} {min_bal} available over the next 90 days."
                 
         elif method == "partial_payment":
-            # "Pay INR 28,820 today and the remaining INR 10,840 on 15 September 2024. This completes the full request and keeps the INR 92,800 minimum protected."
             plan = out.payment_plan.split("|")
             p1_amt = plan[0].split(":")[1]
             p2_date = plan[1].split(":")[0]
             p2_amt = plan[1].split(":")[1]
-            # Convert date format YYYY-MM-DD -> 15 September 2024
             d2 = date.fromisoformat(p2_date).strftime("%-d %B %Y")
-            return f"Pay {curr} {p1_amt} today and the remaining {curr} {p2_amt} on {d2}. This completes the full request and keeps the {curr} {min_bal} minimum protected."
+            return f"Pay {req_curr} {p1_amt} today and the remaining {req_curr} {p2_amt} on {d2}. This completes the full request and keeps the {curr} {min_bal} minimum protected."
             
         elif method == "installments":
-            # "Use 3 installments of IDR 15,952,906.67, starting 8 August 2025. This leaves at least IDR 29,158,400 available."
             plan = out.payment_plan.split("|")
             n = len(plan)
             p1_date = plan[0].split(":")[0]
             p1_amt = plan[0].split(":")[1]
             d1 = date.fromisoformat(p1_date).strftime("%-d %B %Y")
-            return f"Use {n} installments of {curr} {p1_amt}, starting {d1}. This leaves at least {curr} {min_bal} available."
+            return f"Use {n} installments of {req_curr} {p1_amt}, starting {d1}. This leaves at least {curr} {min_bal} available."
             
         elif method == "wait":
-            # "Wait until 15 June 2024, then pay IDR 12,693,000 in full. Paying sooner would put the IDR 30,686,600 minimum at risk."
             d1 = date.fromisoformat(out.earliest_date_for_full_payment).strftime("%-d %B %Y")
-            return f"Wait until {d1}, then pay {curr} {self._fmt(req.requested_amount)} in full. Paying sooner would put the {curr} {min_bal} minimum at risk."
+            return f"Wait until {d1}, then pay {req_curr} {self._fmt(req.requested_amount)} in full. Paying sooner would put the {curr} {min_bal} minimum at risk."
             
         return "Unknown decision."

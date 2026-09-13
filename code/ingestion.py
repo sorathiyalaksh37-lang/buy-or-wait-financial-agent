@@ -72,6 +72,7 @@ class Request:
     desired_completion_date: date
     allows_partial_payment: bool
     request_text: str
+    request_currency: str = ""
 
 
 @dataclass
@@ -213,6 +214,9 @@ def load_requests(path: Path) -> List[Request]:
     reqs: List[Request] = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            text = row.get("request_text", "").strip()
+            m = re.search(r"([A-Z]{3})\s+[\d,\.]+", text)
+            currency = m.group(1) if m else ""
             reqs.append(Request(
                 request_id=row["request_id"].strip(),
                 user_id=row["user_id"].strip(),
@@ -221,7 +225,8 @@ def load_requests(path: Path) -> List[Request]:
                 requested_amount=float(row["requested_amount"]),
                 desired_completion_date=_parse_date(row["desired_completion_date"]),
                 allows_partial_payment=_parse_bool(row.get("allows_partial_payment", "false")),
-                request_text=row.get("request_text", "").strip(),
+                request_text=text,
+                request_currency=currency,
             ))
     return reqs
 
